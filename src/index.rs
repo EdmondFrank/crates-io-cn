@@ -78,7 +78,7 @@ impl GitIndex {
     pub fn update(&self) -> Result<Vec<CrateReq>, Error> {
         self.repo.fetch_origin()?;
         let crates = self.diff("HEAD~1", "origin/HEAD")?;
-        self.repo.rebase_master()?;
+        self.repo.try_merge()?;
         Ok(crates)
     }
 
