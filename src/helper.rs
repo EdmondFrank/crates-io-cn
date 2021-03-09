@@ -12,6 +12,8 @@ use crate::ACTIVE_DOWNLOADS;
 use crate::simple_obs::{AutoRefreshingProvider, Bucket, IamProvider, ProvideObsCredentials, Ssl};
 #[cfg(feature = "upyun")]
 use crate::upyun::{Operator, Upyun};
+#[cfg(feature = "bos")]
+use crate::bos::{BosAutoRefreshingProvider, BosBucket, BosIamProvider, ProvideBosCredentials, BosSsl};
 
 #[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq)]
 pub struct CrateReq {
@@ -45,6 +47,22 @@ lazy_static! {
     static ref OBS_BUCKET: Bucket = Bucket::new(&OBS_BUCKET_NAME, &OBS_ENDPOINT, Ssl::Yes);
 }
 
+#[cfg(feature = "bos")]
+lazy_static! {
+    static ref BOS_BUCKET_NAME: &'static str =
+        Box::leak(env::var("BOS_BUCKET_NAME").unwrap().into_boxed_str());
+    static ref BOS_ENDPOINT: &'static str =
+        Box::leak(env::var("BOS_ENDPOINT").unwrap().into_boxed_str());
+    static ref BOS_ACCESS: &'static str =
+        Box::leak(env::var("BOS_ACCESS").unwrap().into_boxed_str());
+    static ref BOS_SECRET: &'static str =
+        Box::leak(env::var("BOS_SECRET").unwrap().into_boxed_str());
+    static ref BOS_TOKEN: &'static str =
+        Box::leak(env::var("BOS_TOKEN").unwrap().into_boxed_str());
+    static ref BOS_CREDENTIALS: BosAutoRefreshingProvider<BosIamProvider> =
+        BosAutoRefreshingProvider::new(BosIamProvider::new());
+    static ref BOS_BUCKET: BosBucket = BosBucket::new(&BOS_BUCKET_NAME, &BOS_ENDPOINT, BosSsl::Yes);
+}
 #[derive(Clone, Debug)]
 pub struct Crate {
     name: String,
@@ -113,6 +131,14 @@ impl Crate {
             debug!("{:?} download complete", krate_req_key);
             let mut counter: i32 = 10;
             while counter > 0 {
+                #[cfg(feature = "bos")]
+                let result = match BOS_CREDENTIALS.credentials().await {
+                    Ok(credentials) => BOS_BUCKET
+                        .put(&key, buffer.clone(), &credentials)
+                        .await
+                        .err(),
+                    Err(e) => Some(e),
+                };
                 #[cfg(feature = "obs")]
                 let result = match OBS_CREDENTIALS.credentials().await {
                     Ok(credentials) => OBS_BUCKET

@@ -18,9 +18,12 @@ mod index;
 mod simple_obs;
 #[cfg(feature = "upyun")]
 mod upyun;
+#[cfg(feature = "bos")]
+mod bos;
 #[cfg(all(feature = "systemd-integration", target_os = "linux"))]
 mod systemd;
 mod easy_git;
+// mod test;
 
 use crate::index::{Config, GitIndex};
 use helper::{Crate, CrateReq};
@@ -113,8 +116,9 @@ async fn main() -> std::io::Result<()> {
             tokio::time::sleep_until(ddl).await;
         }
     });
+    let server_url = env::var("SERVER_URL").expect("SERVER_URL is not set in .env file");
     let server = HttpServer::new(|| App::new().wrap(Logger::default()).service(sync))
-        .bind("127.0.0.1:8080")?
+        .bind(server_url)?
         .run();
     #[cfg(all(feature = "systemd", target_os = "linux"))]
     systemd::notify_ready();
