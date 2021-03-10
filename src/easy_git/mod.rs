@@ -107,6 +107,21 @@ impl EasyGit for Repository {
         let oid = rebase.commit(None, &self.signature()?, None)?;
         trace!("Rebase commit at: {:?}", oid);
         rebase.finish(None)?;
+        let origin_config = OriginConfig {
+            username: Some(GIT_EMAIL.to_string()),
+            password: Some(GIT_PASS.to_string()),
+            url: MIRROR.to_string()
+        };
+        if let Some(ref remote) = Some(origin_config) {
+            let mut callbacks = git2::RemoteCallbacks::new();
+            callbacks.credentials(|url, user, cred| Self::credentials(url, user, cred, remote));
+            callbacks.transfer_progress(Self::progress_monitor);
+            let mut remote = self.find_remote("local")?;
+            let mut opts = git2::PushOptions::new();
+            opts.remote_callbacks(callbacks);
+            remote.push(&["+refs/heads/master"], Some(&mut opts))?;
+        }
+        debug!("updated index");
         Ok(())
     }
 
