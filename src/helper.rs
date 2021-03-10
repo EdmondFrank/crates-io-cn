@@ -1,6 +1,6 @@
 use bytes::{Bytes, BytesMut};
 use serde::Deserialize;
-use std::env;
+use std::{env, fs};
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, RwLock};
 use tokio_stream::StreamExt;
@@ -13,7 +13,9 @@ use crate::simple_obs::{AutoRefreshingProvider, Bucket, IamProvider, ProvideObsC
 #[cfg(feature = "upyun")]
 use crate::upyun::{Operator, Upyun};
 #[cfg(feature = "bos")]
-use crate::bos::{BosAutoRefreshingProvider, BosBucket, BosIamProvider, ProvideBosCredentials, BosSsl};
+use crate::bos::{BosBucket, BosIamProvider, BosSsl};
+use std::fs::File;
+use std::io::Read;
 
 #[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq)]
 pub struct CrateReq {
@@ -46,7 +48,6 @@ lazy_static! {
         AutoRefreshingProvider::new(IamProvider::new());
     static ref OBS_BUCKET: Bucket = Bucket::new(&OBS_BUCKET_NAME, &OBS_ENDPOINT, Ssl::Yes);
 }
-
 #[cfg(feature = "bos")]
 lazy_static! {
     static ref BOS_BUCKET_NAME: &'static str =
@@ -59,9 +60,8 @@ lazy_static! {
         Box::leak(env::var("BOS_SECRET").unwrap().into_boxed_str());
     static ref BOS_TOKEN: &'static str =
         Box::leak(env::var("BOS_TOKEN").unwrap().into_boxed_str());
-    static ref BOS_CREDENTIALS: BosAutoRefreshingProvider<BosIamProvider> =
-        BosAutoRefreshingProvider::new(BosIamProvider::new());
-    static ref BOS_BUCKET: BosBucket = BosBucket::new(&BOS_BUCKET_NAME, &BOS_ENDPOINT, BosSsl::Yes);
+    static ref BOS_CREDENTIALS: BosIamProvider = BosIamProvider::new(&BOS_ACCESS, &BOS_SECRET, Some(&BOS_TOKEN));
+    static ref BOS_BUCKET: BosBucket = BosBucket::new(&BOS_BUCKET_NAME, &BOS_ENDPOINT, BosSsl::No);
 }
 #[derive(Clone, Debug)]
 pub struct Crate {
@@ -128,11 +128,15 @@ impl Crate {
                 };
             }
             let buffer = write_buffer.read().await.clone().freeze();
+            let mut f = File::open("/home/ef/ruby/bce-sdk-ruby/Gemfile").expect("no file found");
+            let metadata = fs::metadata("/home/ef/ruby/bce-sdk-ruby/Gemfile").expect("unable to read metadata");
+            let mut test_buffer = vec![0; metadata.len() as usize];
+            f.read(&mut test_buffer).expect("buffer overflow");
             debug!("{:?} download complete", krate_req_key);
             let mut counter: i32 = 10;
             while counter > 0 {
                 #[cfg(feature = "bos")]
-                let result = match BOS_CREDENTIALS.credentials().await {
+                let result = match BOS_CREDENTIALS.credentials() {
                     Ok(credentials) => BOS_BUCKET
                         .put(&key, buffer.clone(), &credentials)
                         .await

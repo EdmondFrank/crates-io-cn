@@ -10,6 +10,7 @@ default-run = "crates-io-cn"
 systemd-integration = ["systemd"]
 upyun = ["chrono", "hex", "base64", "phf", "reqwest/json"]
 obs = ["chrono", "hmac", "sha-1", "md-5", "base64", "reqwest/json"]
+bos = ["chrono", "hmac", "sha-1", "sha2", "md-5", "base16", "base64", "reqwest/json", "urlencoding", "url"]
 sync = ["clap", "sqlite", "directories"]
 
 [[bin]]
@@ -32,6 +33,7 @@ actix-http = "3.0.0-beta.3"
 bytes = "1"
 git2 = "0.13"
 serde_json = "1.0"
+urlencoding = { version = "1.1.1", optional = true }
 systemd = { version = "0.8", optional = true }
 
 phf = { version = "0.8", features = ["macros"], optional = true }
@@ -39,9 +41,12 @@ phf = { version = "0.8", features = ["macros"], optional = true }
 chrono = { version = "0.4", optional = true }
 hmac = { version = "0.10", optional = true }
 sha-1 = { version = "0.9", optional = true }
+sha2 = { version = "0.9", optional = true }
+url = { version = "2.2", optional = true }
 md-5 = { version = "0.9", optional = true }
 hex = { version = "0.4", optional = true }
 base64 = { version = "0.13", optional = true }
+base16 = { version = "0.2.1", optional = true }
 
 clap = { version = "2.3", optional = true }
 sqlite = { version = "0.25", optional = true }
