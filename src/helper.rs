@@ -128,10 +128,6 @@ impl Crate {
                 };
             }
             let buffer = write_buffer.read().await.clone().freeze();
-            let mut f = File::open("/home/ef/ruby/bce-sdk-ruby/Gemfile").expect("no file found");
-            let metadata = fs::metadata("/home/ef/ruby/bce-sdk-ruby/Gemfile").expect("unable to read metadata");
-            let mut test_buffer = vec![0; metadata.len() as usize];
-            f.read(&mut test_buffer).expect("buffer overflow");
             debug!("{:?} download complete", krate_req_key);
             let mut counter: i32 = 10;
             while counter > 0 {
