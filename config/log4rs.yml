@@ -14,7 +14,7 @@ root:
     - stdout
 loggers:
   crates_io_cn:
-    level: debug
+    level: trace
     additive: false
     appenders:
       - stdout-lineno
