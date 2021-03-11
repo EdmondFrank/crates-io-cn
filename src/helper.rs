@@ -1,6 +1,6 @@
 use bytes::{Bytes, BytesMut};
-use serde::Deserialize;
-use std::{env, fs};
+use serde::{Deserialize, Serialize};
+use std::env;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, RwLock};
 use tokio_stream::StreamExt;
@@ -8,21 +8,43 @@ use reqwest::StatusCode;
 
 use crate::error::Error;
 use crate::ACTIVE_DOWNLOADS;
+use url::Url;
+use serde_json::json;
 #[cfg(feature = "obs")]
 use crate::simple_obs::{AutoRefreshingProvider, Bucket, IamProvider, ProvideObsCredentials, Ssl};
 #[cfg(feature = "upyun")]
 use crate::upyun::{Operator, Upyun};
 #[cfg(feature = "bos")]
 use crate::bos::{BosBucket, BosIamProvider, BosSsl};
-use std::fs::File;
-use std::io::Read;
+#[cfg(feature = "search")]
+use elasticsearch::{Elasticsearch, auth::Credentials, CreateParts, http::transport::{TransportBuilder, SingleNodeConnectionPool, Transport}};
+use std::collections::BTreeMap;
 
+#[derive(Serialize, Clone, Debug, Deserialize, Hash, Eq, PartialEq)]
+pub struct NewCrateDependency {
+    pub optional: bool,
+    pub default_features: bool,
+    pub name: String,
+    pub features: Vec<String>,
+    pub req: String,
+    pub target: Option<String>,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registry: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explicit_name_in_toml: Option<String>,
+}
 #[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq)]
 pub struct CrateReq {
     #[serde(alias = "crate")]
     name: String,
     #[serde(alias = "vers")]
     version: String,
+    deps: Vec<NewCrateDependency>,
+    features: BTreeMap<String, Vec<String>>,
+    cksum: String,
+    yanked: bool,
+    links: Option<String>,
 }
 
 lazy_static! {
@@ -63,6 +85,19 @@ lazy_static! {
     static ref BOS_CREDENTIALS: BosIamProvider = BosIamProvider::new(&BOS_ACCESS, &BOS_SECRET, Some(&BOS_TOKEN));
     static ref BOS_BUCKET: BosBucket = BosBucket::new(&BOS_BUCKET_NAME, &BOS_ENDPOINT, BosSsl::No);
 }
+
+#[cfg(feature = "search")]
+lazy_static! {
+    static ref ELASTIC_URL: &'static str =
+        Box::leak(env::var("ELASTIC_URL").unwrap().into_boxed_str());
+    static ref ELASTIC_USER: &'static str =
+        Box::leak(env::var("ELASTIC_USER").unwrap().into_boxed_str());
+    static ref ELASTIC_PASS: &'static str =
+        Box::leak(env::var("ELASTIC_PASS").unwrap().into_boxed_str());
+    static ref CRATES_INDEX: &'static str =
+        Box::leak(env::var("CRATES_INDEX").unwrap().into_boxed_str());
+}
+
 #[derive(Clone, Debug)]
 pub struct Crate {
     name: String,
@@ -80,7 +115,15 @@ impl Crate {
             return Ok(krate.clone());
         }
         let mut guard = ACTIVE_DOWNLOADS.write().await;
-        let CrateReq { name, version } = krate_req.clone();
+        let CrateReq {
+            name,
+            version ,
+            deps,
+            features,
+            cksum,
+            yanked,
+            links
+        } = krate_req.clone();
         let uri = format!(
             "https://static.crates.io/crates/{name}/{name}-{version}.crate",
             name = name,
@@ -95,8 +138,8 @@ impl Crate {
         let content_length = resp.content_length().ok_or(Error::MissingField)? as usize;
         let (tx, rx) = watch::channel(0);
         let krate = Self {
-            name,
-            version,
+            name: name.clone(),
+            version: version.clone(),
             content_type: resp
                 .headers()
                 .get("content-type")
@@ -156,6 +199,36 @@ impl Crate {
                     error!("retry attempt {}:{}", 10 - counter, e);
                     counter -= 1;
                     continue;
+                }
+                #[cfg(feature = "search")]
+                let es_result = Elasticsearch::new(
+                    if let (
+                        Ok(user),
+                        Ok(pass),
+                    ) = (ELASTIC_USER.parse(), ELASTIC_PASS.parse()) {
+                        let url = ELASTIC_URL.to_string();
+                        let credentials = Credentials::Basic(user, pass);
+                        let conn_pool = SingleNodeConnectionPool::new(Url::parse(&url).unwrap());
+                        TransportBuilder::new(conn_pool).auth(credentials).build().unwrap()
+                    } else {
+                        Transport::single_node(&ELASTIC_URL).unwrap()
+                    }
+                ).create(CreateParts::IndexId(&CRATES_INDEX, &key))
+                    .body(json!({
+                    "name": name,
+                    "vers": version,
+                    "deps": deps,
+                    "features": features,
+                    "cksum": cksum,
+                    "yanked": yanked,
+                    "links": links,
+                    }))
+                    .send()
+                    .await;
+                #[cfg(feature = "search")]
+                match es_result {
+                    Ok(res) => { trace!("status: [{}] update document of {}", res.status_code(), key); }
+                    Err(e) => { error!("failed to update document of {}, error: {}", key, e); }
                 }
                 ACTIVE_DOWNLOADS.write().await.remove(&krate_req_key);
                 debug!("remove {:?} from active download", krate_req_key);
