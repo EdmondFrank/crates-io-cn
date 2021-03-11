@@ -26,3 +26,13 @@ cargo build --release --features bos
 cp .env.sample .env
 edit .env
 ```
+
+3. Elasticsearch 搜索同步数据同步支持
+```shell
+cargo build --release --features "bos search"
+```
+
+4. 初始化elasticsearch index 和 mappings
+```shell
+cargo run --bin init-elastic --features search
+```
