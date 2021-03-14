@@ -40,10 +40,15 @@ pub struct CrateReq {
     name: String,
     #[serde(alias = "vers")]
     version: String,
-    deps: Vec<NewCrateDependency>,
-    features: BTreeMap<String, Vec<String>>,
-    cksum: String,
-    yanked: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deps: Option<Vec<NewCrateDependency>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    features: Option<BTreeMap<String, Vec<String>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cksum: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    yanked: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     links: Option<String>,
 }
 
