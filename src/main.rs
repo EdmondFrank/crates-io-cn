@@ -174,7 +174,7 @@ async fn sync_by_each_line(entry: &DirEntry) -> Result<(), std::io::Error> {
     let input = File::open(entry.path())?;
     debug!("begin to sync file: {}", entry.path().display());
     let buffered = BufReader::new(input);
-    let ddl = Instant::now().add(Duration::from_secs(60));
+    let ddl = Instant::now().add(Duration::from_secs(5));
     let (tx, rx) = async_channel::unbounded();
     for i in 0..10 {
         let worker_rx = rx.clone();
@@ -197,7 +197,13 @@ async fn sync_by_each_line(entry: &DirEntry) -> Result<(), std::io::Error> {
             error!("{}", e);
         }
     }
-    tokio::time::sleep_until(ddl).await;
+
+    while !rx.is_empty() || !tx.is_empty() {
+        tokio::time::sleep_until(ddl).await;
+    }
+
+    println!("sender: {}, receiver: {}", tx.is_empty(), rx.is_empty());
+
     Ok(())
 }
 
