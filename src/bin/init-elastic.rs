@@ -56,19 +56,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         "type": "boolean"
                                     },
                                     "name": {
-                                        "type": "text",
+                                        "type": "text"
                                     },
-                                    "feature": {
-                                        "type": "nested",
+                                    "features": {
+                                        "type": "text"
                                     },
                                     "req": {
-                                        "type": "text",
+                                        "type": "text"
                                     },
                                     "target": {
-                                        "type": "text",
+                                        "type": "text"
                                     },
                                     "kind": {
-                                        "type": "text",
+                                        "type": "text"
+                                    },
+                                    "registry": {
+                                        "type": "text"
+                                    },
+                                    "explicit_name_in_toml": {
+                                        "type": "text"
                                     }
                                 }
                             },
@@ -76,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 "type": "keyword"
                             },
                             "features": {
-                                "type": "object"
+                                "type": "text"
                             },
                             "yanked": {
                                 "type": "boolean"
