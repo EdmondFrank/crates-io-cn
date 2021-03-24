@@ -17,7 +17,7 @@ use crate::upyun::{Operator, Upyun};
 #[cfg(feature = "bos")]
 use crate::bos::{BosBucket, BosIamProvider, BosSsl};
 #[cfg(feature = "search")]
-use elasticsearch::{Elasticsearch, auth::Credentials, CreateParts, http::transport::{TransportBuilder, SingleNodeConnectionPool, Transport}};
+use elasticsearch::{Elasticsearch, auth::Credentials, IndexParts, http::transport::{TransportBuilder, SingleNodeConnectionPool, Transport}};
 use std::collections::BTreeMap;
 
 #[derive(Serialize, Clone, Debug, Deserialize, Hash, Eq, PartialEq)]
@@ -195,13 +195,14 @@ impl Crate {
                         .err(),
                     Err(e) => Some(e),
                 };
+
                 #[cfg(feature = "upyun")]
                 let result = UPYUN
                     .put_file(*UPYUN_BUCKET, &key, buffer.clone())
                     .await
                     .err();
                 if let Some(e) = result {
-                    error!("retry attempt {}:{}", 10 - counter, e);
+                    debug!("retry attempt {}:{:?}", 10 - counter, e);
                     counter -= 1;
                     continue;
                 }
@@ -218,21 +219,23 @@ impl Crate {
                     } else {
                         Transport::single_node(&ELASTIC_URL).unwrap()
                     }
-                ).create(CreateParts::IndexId(&CRATES_INDEX, &key))
-                    .body(json!({
-                    "name": name,
-                    "vers": version,
-                    "deps": deps,
-                    "features": features,
-                    "cksum": cksum,
-                    "yanked": yanked,
-                    "links": links,
-                    }))
+                ).index(IndexParts::IndexId(&CRATES_INDEX, &key))
+                    .body(json!(
+                        {
+                            "name": name,
+                            "vers": version,
+                            "deps": deps,
+                            "features": format!("{:?}", features),
+                            "cksum": cksum,
+                            "yanked": yanked,
+                            "links": links,
+                        }
+                    ))
                     .send()
                     .await;
                 #[cfg(feature = "search")]
                 match es_result {
-                    Ok(res) => { trace!("status: [{}] update document of {}", res.status_code(), key); }
+                    Ok(res) => { debug!("status: [{}] update document of {}", res.status_code(), key); }
                     Err(e) => { error!("failed to update document of {}, error: {}", key, e); }
                 }
                 ACTIVE_DOWNLOADS.write().await.remove(&krate_req_key);
