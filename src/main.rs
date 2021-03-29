@@ -6,7 +6,7 @@ extern crate lazy_static;
 use actix_web::middleware::Logger;
 use actix_web::{get, web, App, HttpResponse, HttpServer, Error};
 use std::collections::HashMap;
-use std::env;
+use std::{env, cmp};
 
 use serde_json::json;
 use serde::{Deserialize, Serialize};
@@ -41,6 +41,7 @@ use std::io::{BufReader, BufRead};
 use walkdir::{WalkDir, DirEntry};
 use url::Url;
 use serde_json::Value;
+use chrono::{Utc, SecondsFormat};
 
 #[cfg(feature = "search")]
 lazy_static! {
@@ -78,7 +79,7 @@ async fn sync(krate_req: web::Path<CrateReq>) -> HttpResponse {
     format!("{:?}", krate_req);
     match Crate::create(krate_req).await {
         Err(e) => {
-            error!("{}", e);
+            error!("{:?}", e);
             HttpResponse::NotFound().finish()
         }
         Ok(krate) => {
@@ -107,6 +108,21 @@ struct Crates {
 
 #[cfg(feature = "search")]
 #[derive(Deserialize,Serialize)]
+struct CratesList {
+    crates: Vec<CrateItem>,
+    meta: PageResults,
+}
+
+#[cfg(feature = "search")]
+#[derive(Deserialize,Serialize)]
+pub struct CrateItem {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+}
+
+#[cfg(feature = "search")]
+#[derive(Deserialize,Serialize)]
 pub struct CratePackage {
     pub name: String,
     pub description: Option<String>,
@@ -122,10 +138,89 @@ struct SearchParams {
 }
 
 #[cfg(feature = "search")]
+#[derive(Deserialize, Debug)]
+struct ListParams {
+    page: Option<u32>,
+    per_page: Option<u32>
+}
+
+#[cfg(feature = "search")]
+#[derive(Deserialize,Serialize)]
+struct PageResults {
+    total: u64,
+    current_page: u32,
+    per_page: u32
+}
+
+#[get("/sync_status")]
+async fn sync_status() -> Result<HttpResponse, Error> {
+    // this status interface is compatible with nexus interfaces format [no meaning]
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .body(json!(
+        {
+        "id" : "carte-index-sync",
+        "name" : "Sync",
+        "type" : "script",
+        "message" : "Execute script",
+        "currentState" : "WAITING",
+        "lastRunResult" : "INTERRUPTED",
+        "nextRun" : null,
+        "lastRun" : Utc::now().to_rfc3339_opts(SecondsFormat::Secs, false)
+    })))
+}
+
+#[cfg(feature = "search")]
+#[get("/api/v1/list")]
+async fn list(params: web::Query<ListParams>) -> Result<HttpResponse, Error> {
+    let mut crates = Vec::new();
+    let current_page = cmp::max(params.page.unwrap_or(1), 1);
+    let per_page = cmp::max(params.per_page.unwrap_or(10),1);
+    let response = Elasticsearch::new(
+        if let (
+            Ok(user),
+            Ok(pass),
+        ) = (ELASTIC_USER.parse(), ELASTIC_PASS.parse()) {
+            let url = ELASTIC_URL.to_string();
+            let credentials = Credentials::Basic(user, pass);
+            let conn_pool = SingleNodeConnectionPool::new(Url::parse(&url).unwrap());
+            TransportBuilder::new(conn_pool).auth(credentials).build().unwrap()
+        } else {
+            Transport::single_node(&ELASTIC_URL).unwrap()
+        }
+    ).search(SearchParts::Index(&[&CRATES_INDEX]))
+        .body(json!({
+            "query": {
+                "match_all": {}
+            },
+            "size": per_page,
+            "from": (current_page - 1) * per_page
+        }))
+        .send()
+        .await.expect("failed to connect elastic");
+    let response_body = response.json::<Value>().await.expect("failed to parse elastic result");
+    let total = response_body["hits"]["total"]["value"].as_u64().unwrap_or(0);
+    for hit in response_body["hits"]["hits"].as_array().unwrap() {
+        let name = hit["_source"]["name"].to_string().replace("\"","");
+        let version = hit["_source"]["vers"].to_string().replace("\"","");
+        crates.push(CrateItem {
+            id: format!("{}/{}", name, version),
+            name,
+            version
+        });
+    }
+
+    Ok(HttpResponse::Ok().json(&CratesList { crates, meta: PageResults { total, current_page, per_page}, }))
+}
+
+
+#[cfg(feature = "search")]
 #[get("/api/v1/crates")]
 async fn search(params: web::Query<SearchParams>) -> Result<HttpResponse, Error> {
     format!("Welcome {:?}!", params);
     let mut crates = Vec::new();
+    let current_page = cmp::max(params.page.unwrap_or(1), 1);
+    let per_page = cmp::max(params.per_page.unwrap_or(10), 1);
     let response = Elasticsearch::new(
         if let (
             Ok(user),
@@ -145,8 +240,8 @@ async fn search(params: web::Query<SearchParams>) -> Result<HttpResponse, Error>
                     "name": params.q
                 }
             },
-            "size": params.per_page.unwrap_or(10),
-            "from": params.page.unwrap_or(0),
+            "size": per_page,
+            "from": (current_page - 1) * per_page,
         }))
         .send()
         .await.expect("failed to connect elastic");
@@ -154,9 +249,9 @@ async fn search(params: web::Query<SearchParams>) -> Result<HttpResponse, Error>
     let total = response_body["hits"]["total"]["value"].as_u64().unwrap();
     for hit in response_body["hits"]["hits"].as_array().unwrap() {
         crates.push(CratePackage {
-            name: hit["_source"]["name"].to_string(),
-            description: Option::from(hit["_id"].to_string()),
-            max_version: hit["_source"]["vers"].to_string()
+            name: hit["_source"]["name"].to_string().replace("\"",""),
+            description: Option::from(hit["_id"].to_string().replace("\"","")),
+            max_version: hit["_source"]["vers"].to_string().replace("\"", "")
         });
     }
     Ok(HttpResponse::Ok().json(&Crates { crates, meta: TotalCrates { total, }, }))
@@ -183,7 +278,7 @@ async fn sync_by_each_line(entry: &DirEntry) -> Result<(), std::io::Error> {
                 debug!("[worker#{}]start to sync {:?}", i, krate);
                 match Crate::create(krate).await {
                     Ok(_) => (),
-                    Err(e) => error!("{}", e),
+                    Err(e) => error!("{:?}", e),
                 };
             }
         });
@@ -227,7 +322,7 @@ async fn main() -> std::io::Result<()> {
                 debug!("[worker#{}]start to sync {:?}", i, krate);
                 match Crate::create(krate).await {
                     Ok(_) => (),
-                    Err(e) => error!("{}", e),
+                    Err(e) => error!("{:?}", e),
                 };
             }
         });
@@ -250,7 +345,7 @@ async fn main() -> std::io::Result<()> {
             let crates = match updated {
                 Ok(crates) => crates,
                 Err(e) => {
-                    error!("git update error: {}", e);
+                    error!("git update error: {:?}", e);
                     tokio::time::sleep(Duration::from_secs(10)).await;
                     continue;
                 }
@@ -284,6 +379,8 @@ async fn main() -> std::io::Result<()> {
     let server = HttpServer::new(|| App::new().wrap(Logger::default())
                                  .service(sync)
                                  .service(search)
+                                 .service(list)
+                                 .service(sync_status)
     )
         .bind(server_url)?
         .run();

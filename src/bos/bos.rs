@@ -7,6 +7,8 @@ use hmac::{Hmac, NewMac, Mac};
 use super::credentials::*;
 use url::Url;
 use md5::{Md5, Digest};
+use chrono::{Utc, SecondsFormat};
+use reqwest::header;
 
 #[derive(Debug, Copy, Clone)]
 #[allow(dead_code)]
@@ -37,7 +39,7 @@ fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
     hmac256.finalize().into_bytes().as_slice().to_vec()
 }
 
-fn md5_hash(content: &[u8]) -> String {
+pub fn md5_hash(content: &[u8]) -> String {
     let mut hasher = Md5::new();
     hasher.update(content);
     base64::encode(hasher.finalize())
@@ -73,10 +75,50 @@ impl BosBucket {
         }
     }
 
-    pub async fn put(&self, key: &str, content: Bytes, creds: &BosCredentials) -> Result<Response> {
-        use chrono::{Utc, SecondsFormat};
-        use reqwest::header;
+    pub async fn head(&self, key: &str, creds: &BosCredentials) -> Result<Response> {
+        let url = format!("{}/{}", self.base_url, key);
+        let request = self.client.head(&url);
+        let date = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+        let request_url = Url::parse(&url)?;
+        let path = request_url.path();
+        let content_type = "application/octet-stream";
 
+        let auth = self.auth(
+            "HEAD",
+            path,
+            "",
+            0,
+            "",
+            &date,
+            content_type,
+            creds,
+        );
+        let request = request
+            .header("Content-Md5", "")
+            .header(header::CONTENT_LENGTH, 0)
+            .header(header::CONTENT_TYPE, content_type)
+            .header(header::HOST, &self.host)
+            .header("X-BCE-Date", date.clone())
+            .header(header::AUTHORIZATION, auth.clone());
+
+        let result = request.send().await?;
+        let headers = result.headers();
+        let bce_request_id = headers
+            .get("x-bce-request-id")
+            .map_or_else(|| "null", |h| h.to_str().unwrap_or("invalid"));
+        let bce_debug_id = headers
+            .get("x-bce-debug-id")
+            .map_or_else(|| "null", |h| h.to_str().unwrap_or("invalid"));
+        trace!(
+            "BOS status: [{}] x-bce-request-id: {:?}, x-bce-debug-id: {:?}",
+            result.status(),
+            bce_request_id,
+            bce_debug_id
+        );
+        Ok(result)
+    }
+
+    pub async fn put(&self, key: &str, content: Bytes, creds: &BosCredentials) -> Result<Response> {
         let url = format!("{}/{}", self.base_url, key);
         debug!("PUT {}", url);
         let request = self.client.put(&url);

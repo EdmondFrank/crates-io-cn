@@ -15,7 +15,7 @@ use crate::simple_obs::{AutoRefreshingProvider, Bucket, IamProvider, ProvideObsC
 #[cfg(feature = "upyun")]
 use crate::upyun::{Operator, Upyun};
 #[cfg(feature = "bos")]
-use crate::bos::{BosBucket, BosIamProvider, BosSsl};
+use crate::bos::{BosBucket, BosIamProvider, BosSsl, md5_hash};
 #[cfg(feature = "search")]
 use elasticsearch::{Elasticsearch, auth::Credentials, IndexParts, http::transport::{TransportBuilder, SingleNodeConnectionPool, Transport}};
 use std::collections::BTreeMap;
@@ -177,6 +177,20 @@ impl Crate {
             }
             let buffer = write_buffer.read().await.clone().freeze();
             debug!("{:?} download complete", krate_req_key);
+            #[cfg(feature = "bos")]
+            if let Ok(credentials) = BOS_CREDENTIALS.credentials() {
+                let result = BOS_BUCKET.head(key.clone().as_str(), &credentials).await.unwrap();
+                if result.status().as_u16() != 404 {
+                    let content_md5 = result.headers()
+                        .get("content-md5")
+                        .map_or_else(|| "null", |h| h.to_str().unwrap_or("invalid"));
+                    if content_md5 == md5_hash(&buffer) {
+                        debug!("crate md5 {:?}", md5_hash(&buffer));
+                        debug!("head object meta {:?} ", result.headers());
+                        return;
+                    }
+                }
+            }
             let mut counter: i32 = 10;
             while counter > 0 {
                 #[cfg(feature = "bos")]
