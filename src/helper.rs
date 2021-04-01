@@ -53,7 +53,15 @@ pub struct CrateReq {
 }
 
 lazy_static! {
-    static ref CLIENT: reqwest::Client = reqwest::Client::new();
+    static ref PROXY: &'static str = Box::leak(env::var("PROXY").unwrap().into_boxed_str());
+    #[derive(Debug)]
+    static ref CLIENT: reqwest::Client = if PROXY.is_empty() {
+        reqwest::Client::new()
+    } else {
+        reqwest::Client::builder()
+            .proxy(reqwest::Proxy::http(*PROXY).unwrap())
+            .build().unwrap()
+    };
 }
 #[cfg(feature = "upyun")]
 lazy_static! {
