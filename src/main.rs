@@ -133,6 +133,7 @@ pub struct CratePackage {
 #[derive(Deserialize, Debug)]
 struct SearchParams {
     q: String,
+    version: Option<String>,
     per_page: Option<u32>,
     page: Option<u32>,
 }
@@ -156,18 +157,18 @@ struct PageResults {
 async fn sync_status() -> Result<HttpResponse, Error> {
     // this status interface is compatible with nexus interfaces format [no meaning]
     Ok(HttpResponse::Ok()
-        .content_type("application/json")
-        .body(json!(
-        {
-        "id" : "carte-index-sync",
-        "name" : "Sync",
-        "type" : "script",
-        "message" : "Execute script",
-        "currentState" : "WAITING",
-        "lastRunResult" : "INTERRUPTED",
-        "nextRun" : null,
-        "lastRun" : Utc::now().to_rfc3339_opts(SecondsFormat::Secs, false)
-    })))
+       .content_type("application/json")
+       .body(json!(
+           {
+               "id" : "carte-index-sync",
+               "name" : "Sync",
+               "type" : "script",
+               "message" : "Execute script",
+               "currentState" : "WAITING",
+               "lastRunResult" : "INTERRUPTED",
+               "nextRun" : null,
+               "lastRun" : Utc::now().to_rfc3339_opts(SecondsFormat::Secs, false)
+           })))
 }
 
 #[cfg(feature = "search")]
@@ -221,6 +222,42 @@ async fn search(params: web::Query<SearchParams>) -> Result<HttpResponse, Error>
     let mut crates = Vec::new();
     let current_page = cmp::max(params.page.unwrap_or(1), 1);
     let per_page = cmp::max(params.per_page.unwrap_or(10), 1);
+    let version = params.version.as_deref().unwrap_or("").trim();
+    let query = match version {
+        "" => {
+            json!({
+                "query": {
+                    "match": {
+                        "name": params.q,
+                    }
+                },
+                "size": per_page,
+                "from": (current_page - 1) * per_page,
+            })
+        }
+        _  => {
+            json!({
+                "query": {
+                    "bool": {
+                        "must": [
+                            {
+                                "match": {
+                                    "name": params.q
+                                }
+                            },
+                            {
+                                "match": {
+                                    "vers": version
+                                }
+                            }
+                        ]
+                    }
+                },
+                "size": per_page,
+                "from": (current_page - 1) * per_page,
+            })
+        }
+    };
     let response = Elasticsearch::new(
         if let (
             Ok(user),
@@ -234,15 +271,7 @@ async fn search(params: web::Query<SearchParams>) -> Result<HttpResponse, Error>
             Transport::single_node(&ELASTIC_URL).unwrap()
         }
     ).search(SearchParts::Index(&[&CRATES_INDEX]))
-        .body(json!({
-            "query": {
-                "match": {
-                    "name": params.q
-                }
-            },
-            "size": per_page,
-            "from": (current_page - 1) * per_page,
-        }))
+        .body(query)
         .send()
         .await.expect("failed to connect elastic");
     let response_body = response.json::<Value>().await.expect("failed to parse elastic result");
