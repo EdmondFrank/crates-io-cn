@@ -11,7 +11,7 @@ systemd-integration = ["systemd"]
 upyun = ["chrono", "hex", "base64", "phf", "reqwest/json"]
 obs = ["chrono", "hmac", "sha-1", "md-5", "base64", "reqwest/json"]
 bos = ["chrono", "hmac", "sha-1", "sha2", "md-5", "base16", "base64", "reqwest/json", "urlencoding", "url"]
-sync = ["clap", "sqlite", "directories", "walkdir"]
+sync = ["clap", "sqlite", "directories", "walkdir", "rev_lines"]
 search = ["elasticsearch", "url"]
 
 [[bin]]
@@ -43,6 +43,7 @@ systemd = { version = "0.8", optional = true }
 
 phf = { version = "0.8", features = ["macros"], optional = true }
 
+rev_lines = { version = "0.2.1", optional = true }
 chrono = { version = "0.4", optional = true }
 hmac = { version = "0.10", optional = true }
 sha-1 = { version = "0.9", optional = true }

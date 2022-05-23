@@ -1,24 +1,28 @@
 use bytes::{Bytes, BytesMut};
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, RwLock};
 use tokio_stream::StreamExt;
-use reqwest::StatusCode;
 
+#[cfg(feature = "bos")]
+use crate::bos::{md5_hash, BosBucket, BosIamProvider, BosSsl};
 use crate::error::Error;
-use crate::ACTIVE_DOWNLOADS;
-use url::Url;
-use serde_json::json;
 #[cfg(feature = "obs")]
 use crate::simple_obs::{AutoRefreshingProvider, Bucket, IamProvider, ProvideObsCredentials, Ssl};
 #[cfg(feature = "upyun")]
 use crate::upyun::{Operator, Upyun};
-#[cfg(feature = "bos")]
-use crate::bos::{BosBucket, BosIamProvider, BosSsl, md5_hash};
+use crate::ACTIVE_DOWNLOADS;
 #[cfg(feature = "search")]
-use elasticsearch::{Elasticsearch, auth::Credentials, IndexParts, http::transport::{TransportBuilder, SingleNodeConnectionPool, Transport}};
+use elasticsearch::{
+    auth::Credentials,
+    http::transport::{SingleNodeConnectionPool, Transport, TransportBuilder},
+    Elasticsearch, IndexParts,
+};
+use serde_json::json;
 use std::collections::BTreeMap;
+use url::Url;
 
 #[derive(Serialize, Clone, Debug, Deserialize, Hash, Eq, PartialEq)]
 pub struct NewCrateDependency {
@@ -93,9 +97,9 @@ lazy_static! {
         Box::leak(env::var("BOS_ACCESS").unwrap().into_boxed_str());
     static ref BOS_SECRET: &'static str =
         Box::leak(env::var("BOS_SECRET").unwrap().into_boxed_str());
-    static ref BOS_TOKEN: &'static str =
-        Box::leak(env::var("BOS_TOKEN").unwrap().into_boxed_str());
-    static ref BOS_CREDENTIALS: BosIamProvider = BosIamProvider::new(&BOS_ACCESS, &BOS_SECRET, Some(&BOS_TOKEN));
+    static ref BOS_TOKEN: &'static str = Box::leak(env::var("BOS_TOKEN").unwrap().into_boxed_str());
+    static ref BOS_CREDENTIALS: BosIamProvider =
+        BosIamProvider::new(&BOS_ACCESS, &BOS_SECRET, Some(&BOS_TOKEN));
     static ref BOS_BUCKET: BosBucket = BosBucket::new(&BOS_BUCKET_NAME, &BOS_ENDPOINT, BosSsl::No);
 }
 
@@ -130,15 +134,15 @@ impl Crate {
         let mut guard = ACTIVE_DOWNLOADS.write().await;
         let CrateReq {
             name,
-            version ,
+            version,
             deps,
             features,
             cksum,
             yanked,
-            links
+            links,
         } = krate_req.clone();
         let uri = format!(
-            "https://static.crates.io/crates/{name}/{name}-{version}.crate",
+            "https://crates.io/api/v1/crates/{name}/{version}/download",
             name = name,
             version = version
         );
@@ -183,24 +187,37 @@ impl Crate {
                     }
                 };
             }
+
             let buffer = write_buffer.read().await.clone().freeze();
             debug!("{:?} download complete", krate_req_key);
+
+            let mut skip = false;
+
             #[cfg(feature = "bos")]
             if let Ok(credentials) = BOS_CREDENTIALS.credentials() {
-                let result = BOS_BUCKET.head(key.clone().as_str(), &credentials).await.unwrap();
+                let result = BOS_BUCKET
+                    .head(key.clone().as_str(), &credentials)
+                    .await
+                    .unwrap();
                 if result.status().as_u16() != 404 {
-                    let content_md5 = result.headers()
+                    let content_md5 = result
+                        .headers()
                         .get("content-md5")
                         .map_or_else(|| "null", |h| h.to_str().unwrap_or("invalid"));
+                    debug!("head result {:?}", result.status());
                     if content_md5 == md5_hash(&buffer) {
                         debug!("crate md5 {:?}", md5_hash(&buffer));
                         debug!("head object meta {:?} ", result.headers());
-                        return;
+                        skip = true;
                     }
                 }
             }
+
             let mut counter: i32 = 10;
-            while counter > 0 {
+            debug!("begin upload: {}", counter);
+            while counter > 0 && !skip {
+                debug!("current attempt rest: {}", counter);
+
                 #[cfg(feature = "bos")]
                 let result = match BOS_CREDENTIALS.credentials() {
                     Ok(credentials) => BOS_BUCKET
@@ -209,6 +226,7 @@ impl Crate {
                         .err(),
                     Err(e) => Some(e),
                 };
+
                 #[cfg(feature = "obs")]
                 let result = match OBS_CREDENTIALS.credentials().await {
                     Ok(credentials) => OBS_BUCKET
@@ -223,42 +241,59 @@ impl Crate {
                     .put_file(*UPYUN_BUCKET, &key, buffer.clone())
                     .await
                     .err();
+
                 if let Some(e) = result {
                     debug!("retry attempt {}:{:?}", 10 - counter, e);
                     counter -= 1;
                     continue;
                 }
+
                 #[cfg(feature = "search")]
                 let es_result = Elasticsearch::new(
-                    if let (
-                        Ok(user),
-                        Ok(pass),
-                    ) = (ELASTIC_USER.parse(), ELASTIC_PASS.parse()) {
+                    if let (Ok(user), Ok(pass)) = (ELASTIC_USER.parse(), ELASTIC_PASS.parse()) {
                         let url = ELASTIC_URL.to_string();
                         let credentials = Credentials::Basic(user, pass);
                         let conn_pool = SingleNodeConnectionPool::new(Url::parse(&url).unwrap());
-                        TransportBuilder::new(conn_pool).auth(credentials).build().unwrap()
+                        TransportBuilder::new(conn_pool)
+                            .auth(credentials)
+                            .build()
+                            .unwrap()
                     } else {
                         Transport::single_node(&ELASTIC_URL).unwrap()
+                    },
+                )
+                .index(IndexParts::IndexId(&CRATES_INDEX, &key))
+                .body(json!(
+                    {
+                        "name": name,
+                        "vers": version,
+                        "deps": deps,
+                        // "features": format!("{{\"data\": \"{:?}\"}}", features.as_ref().unwrap()),
+                        "cksum": cksum,
+                        "yanked": yanked,
+                        "links": links,
                     }
-                ).index(IndexParts::IndexId(&CRATES_INDEX, &key))
-                    .body(json!(
-                        {
-                            "name": name,
-                            "vers": version,
-                            "deps": deps,
-                            "features": format!("{:?}", features),
-                            "cksum": cksum,
-                            "yanked": yanked,
-                            "links": links,
-                        }
-                    ))
-                    .send()
-                    .await;
+                ))
+                .send()
+                .await;
+
                 #[cfg(feature = "search")]
                 match es_result {
-                    Ok(res) => { debug!("status: [{}] update document of {}", res.status_code(), key); }
-                    Err(e) => { error!("failed to update document of {}, error: {}", key, e); }
+                    Ok(res) => {
+                        debug!(
+                            "{}",
+                            format!("{{\"data\": \"{:?}\"}}", features.as_ref().unwrap())
+                        );
+                        debug!(
+                            "status: [{}] update document of {} {}",
+                            res.status_code(),
+                            key,
+                            res.text().await.unwrap()
+                        );
+                    }
+                    Err(e) => {
+                        error!("failed to update document of {}, error: {}", key, e);
+                    }
                 }
                 ACTIVE_DOWNLOADS.write().await.remove(&krate_req_key);
                 debug!("remove {:?} from active download", krate_req_key);
