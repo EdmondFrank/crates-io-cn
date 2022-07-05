@@ -141,8 +141,6 @@ impl BosBucket {
             content_type,
             creds,
         );
-        debug!("auth {}", auth);
-
 
 
         let request = request

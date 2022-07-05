@@ -192,10 +192,8 @@ impl EasyGit for Repository {
         origin_config: &OriginConfig,
     ) -> Result<git2::Cred, git2::Error> {
         let mut error = git2::Error::from_str(&format!("Failed to find credentials for {}", url));
-        debug!("credentials");
         if cred.contains(CredentialType::USER_PASS_PLAINTEXT) {
             if let (&Some(ref u), &Some(ref p)) = (&origin_config.username, &origin_config.password) {
-                debug!("from username/password: {}:{}", u, p);
                 match Cred::userpass_plaintext(u, p) {
                     Err(e) => {
                         debug!("Error: {:?}", e);

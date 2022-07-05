@@ -13,19 +13,12 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::{mpsc::unbounded_channel, RwLock};
 
-#[cfg(feature = "bos")]
 mod bos;
 mod error;
 mod helper;
 #[allow(dead_code)]
 mod index;
-#[cfg(feature = "obs")]
-mod simple_obs;
-#[cfg(feature = "upyun")]
-mod upyun;
-#[cfg(feature = "sync")]
 use clap::{App as CliApp, Arg};
-#[cfg(feature = "search")]
 use elasticsearch::{
     auth::Credentials,
     http::transport::{SingleNodeConnectionPool, Transport, TransportBuilder},
@@ -48,7 +41,6 @@ use tokio::time::{Duration, Instant};
 use url::Url;
 use walkdir::{DirEntry, WalkDir};
 
-#[cfg(feature = "search")]
 lazy_static! {
     static ref ELASTIC_URL: &'static str =
         Box::leak(env::var("ELASTIC_URL").unwrap().into_boxed_str());
@@ -100,27 +92,23 @@ async fn sync(krate_req: web::Path<CrateReq>) -> HttpResponse {
     }
 }
 
-#[cfg(feature = "search")]
 #[derive(Deserialize, Serialize)]
 struct TotalCrates {
     total: u64,
 }
 
-#[cfg(feature = "search")]
 #[derive(Deserialize, Serialize)]
 struct Crates {
     crates: Vec<CratePackage>,
     meta: TotalCrates,
 }
 
-#[cfg(feature = "search")]
 #[derive(Deserialize, Serialize)]
 struct CratesList {
     crates: Vec<CrateItem>,
     meta: PageResults,
 }
 
-#[cfg(feature = "search")]
 #[derive(Deserialize, Serialize)]
 pub struct CrateItem {
     pub id: String,
@@ -128,7 +116,6 @@ pub struct CrateItem {
     pub version: String,
 }
 
-#[cfg(feature = "search")]
 #[derive(Deserialize, Serialize)]
 pub struct CratePackage {
     pub name: String,
@@ -136,7 +123,6 @@ pub struct CratePackage {
     pub max_version: String,
 }
 
-#[cfg(feature = "search")]
 #[derive(Deserialize, Debug)]
 struct SearchParams {
     q: String,
@@ -145,14 +131,12 @@ struct SearchParams {
     page: Option<u32>,
 }
 
-#[cfg(feature = "search")]
 #[derive(Deserialize, Debug)]
 struct ListParams {
     page: Option<u32>,
     per_page: Option<u32>,
 }
 
-#[cfg(feature = "search")]
 #[derive(Deserialize, Serialize)]
 struct PageResults {
     total: u64,
@@ -178,7 +162,6 @@ async fn sync_status() -> Result<HttpResponse, Error> {
         })))
 }
 
-#[cfg(feature = "search")]
 #[get("/api/v1/list")]
 async fn list(params: web::Query<ListParams>) -> Result<HttpResponse, Error> {
     let mut crates = Vec::new();
@@ -235,7 +218,6 @@ async fn list(params: web::Query<ListParams>) -> Result<HttpResponse, Error> {
     }))
 }
 
-#[cfg(feature = "search")]
 #[get("/api/v1/crates")]
 async fn search(params: web::Query<SearchParams>) -> Result<HttpResponse, Error> {
     format!("Welcome {:?}!", params);

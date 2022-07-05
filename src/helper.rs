@@ -5,16 +5,9 @@ use std::env;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, RwLock};
 use tokio_stream::StreamExt;
-
-#[cfg(feature = "bos")]
+use crate::ACTIVE_DOWNLOADS;
 use crate::bos::{md5_hash, BosBucket, BosIamProvider, BosSsl};
 use crate::error::Error;
-#[cfg(feature = "obs")]
-use crate::simple_obs::{AutoRefreshingProvider, Bucket, IamProvider, ProvideObsCredentials, Ssl};
-#[cfg(feature = "upyun")]
-use crate::upyun::{Operator, Upyun};
-use crate::ACTIVE_DOWNLOADS;
-#[cfg(feature = "search")]
 use elasticsearch::{
     auth::Credentials,
     http::transport::{SingleNodeConnectionPool, Transport, TransportBuilder},
@@ -60,34 +53,16 @@ lazy_static! {
     static ref PROXY: &'static str = Box::leak(env::var("PROXY").unwrap().into_boxed_str());
     #[derive(Debug)]
     static ref CLIENT: reqwest::Client = if PROXY.is_empty() {
+        debug!("initialize without proxy");
         reqwest::Client::new()
     } else {
+        debug!("initialize with proxy {:?}", Box::leak(env::var("PROXY").unwrap().into_boxed_str()));
         reqwest::Client::builder()
             .proxy(reqwest::Proxy::http(*PROXY).unwrap())
             .build().unwrap()
     };
 }
-#[cfg(feature = "upyun")]
-lazy_static! {
-    static ref UPYUN_NAME: &'static str =
-        Box::leak(env::var("UPYUN_NAME").unwrap().into_boxed_str());
-    static ref UPYUN_TOKEN: &'static str =
-        Box::leak(env::var("UPYUN_TOKEN").unwrap().into_boxed_str());
-    static ref UPYUN_BUCKET: &'static str =
-        Box::leak(env::var("UPYUN_BUCKET").unwrap().into_boxed_str());
-    static ref UPYUN: Upyun = Upyun::new(Operator::new(&UPYUN_NAME, &UPYUN_TOKEN));
-}
-#[cfg(feature = "obs")]
-lazy_static! {
-    static ref OBS_BUCKET_NAME: &'static str =
-        Box::leak(env::var("OBS_BUCKET_NAME").unwrap().into_boxed_str());
-    static ref OBS_ENDPOINT: &'static str =
-        Box::leak(env::var("OBS_ENDPOINT").unwrap().into_boxed_str());
-    static ref OBS_CREDENTIALS: AutoRefreshingProvider<IamProvider> =
-        AutoRefreshingProvider::new(IamProvider::new());
-    static ref OBS_BUCKET: Bucket = Bucket::new(&OBS_BUCKET_NAME, &OBS_ENDPOINT, Ssl::Yes);
-}
-#[cfg(feature = "bos")]
+
 lazy_static! {
     static ref BOS_BUCKET_NAME: &'static str =
         Box::leak(env::var("BOS_BUCKET_NAME").unwrap().into_boxed_str());
@@ -103,7 +78,6 @@ lazy_static! {
     static ref BOS_BUCKET: BosBucket = BosBucket::new(&BOS_BUCKET_NAME, &BOS_ENDPOINT, BosSsl::No);
 }
 
-#[cfg(feature = "search")]
 lazy_static! {
     static ref ELASTIC_URL: &'static str =
         Box::leak(env::var("ELASTIC_URL").unwrap().into_boxed_str());
@@ -193,32 +167,33 @@ impl Crate {
 
             let mut skip = false;
 
-            #[cfg(feature = "bos")]
             if let Ok(credentials) = BOS_CREDENTIALS.credentials() {
-                let result = BOS_BUCKET
+                if let Ok(result) = BOS_BUCKET
                     .head(key.clone().as_str(), &credentials)
-                    .await
-                    .unwrap();
-                if result.status().as_u16() != 404 {
-                    let content_md5 = result
-                        .headers()
-                        .get("content-md5")
-                        .map_or_else(|| "null", |h| h.to_str().unwrap_or("invalid"));
-                    debug!("head result {:?}", result.status());
-                    if content_md5 == md5_hash(&buffer) {
-                        debug!("crate md5 {:?}", md5_hash(&buffer));
-                        debug!("head object meta {:?} ", result.headers());
-                        skip = true;
+                    .await {
+                        if result.status().as_u16() != 404 {
+                            let content_md5 = result
+                                .headers()
+                                .get("content-md5")
+                                .map_or_else(|| "null", |h| h.to_str().unwrap_or("invalid"));
+                            debug!("head result {:?}", result.status());
+                            if content_md5 == md5_hash(&buffer) {
+                                debug!("crate md5 {:?}", md5_hash(&buffer));
+                                debug!("head object meta {:?} ", result.headers());
+                                skip = true;
+                            }
+                        } else {
+                            debug!("head result {:?}", result.status());
+                        }
                     }
-                }
+            } else {
+                debug!("failed to fetch credentials")
             }
 
             let mut counter: i32 = 10;
             debug!("begin upload: {}", counter);
             while counter > 0 && !skip {
                 debug!("current attempt rest: {}", counter);
-
-                #[cfg(feature = "bos")]
                 let result = match BOS_CREDENTIALS.credentials() {
                     Ok(credentials) => BOS_BUCKET
                         .put(&key, buffer.clone(), &credentials)
@@ -227,28 +202,12 @@ impl Crate {
                     Err(e) => Some(e),
                 };
 
-                #[cfg(feature = "obs")]
-                let result = match OBS_CREDENTIALS.credentials().await {
-                    Ok(credentials) => OBS_BUCKET
-                        .put(&key, buffer.clone(), &credentials)
-                        .await
-                        .err(),
-                    Err(e) => Some(e),
-                };
-
-                #[cfg(feature = "upyun")]
-                let result = UPYUN
-                    .put_file(*UPYUN_BUCKET, &key, buffer.clone())
-                    .await
-                    .err();
-
                 if let Some(e) = result {
                     debug!("retry attempt {}:{:?}", 10 - counter, e);
                     counter -= 1;
                     continue;
                 }
 
-                #[cfg(feature = "search")]
                 let es_result = Elasticsearch::new(
                     if let (Ok(user), Ok(pass)) = (ELASTIC_USER.parse(), ELASTIC_PASS.parse()) {
                         let url = ELASTIC_URL.to_string();
@@ -262,22 +221,21 @@ impl Crate {
                         Transport::single_node(&ELASTIC_URL).unwrap()
                     },
                 )
-                .index(IndexParts::IndexId(&CRATES_INDEX, &key))
-                .body(json!(
-                    {
-                        "name": name,
-                        "vers": version,
-                        "deps": deps,
-                        // "features": format!("{{\"data\": \"{:?}\"}}", features.as_ref().unwrap()),
-                        "cksum": cksum,
-                        "yanked": yanked,
-                        "links": links,
-                    }
-                ))
-                .send()
-                .await;
+                    .index(IndexParts::IndexId(&CRATES_INDEX, &key))
+                    .body(json!(
+                        {
+                            "name": name,
+                            "vers": version,
+                            "deps": deps,
+                            // "features": format!("{{\"data\": \"{:?}\"}}", features.as_ref().unwrap()),
+                            "cksum": cksum,
+                            "yanked": yanked,
+                            "links": links,
+                        }
+                    ))
+                    .send()
+                    .await;
 
-                #[cfg(feature = "search")]
                 match es_result {
                     Ok(res) => {
                         debug!(
